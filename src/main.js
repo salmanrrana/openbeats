@@ -101,7 +101,8 @@ const TRACK_DEFS = [
     instrument: "zap",
     color: "oklch(0.72 0.18 35)",
     density: 0.10,
-    octave: 5
+    octave: 5,
+    dry: true
   }
 ];
 
@@ -221,11 +222,11 @@ function createInitialState() {
     currentStep: -1,
     selectedSlot: 1,
     effects: {
-      crush: 7,
-      drive: 0.22,
-      delay: 0.18,
-      reverb: 0.22,
-      tone: 7800
+      crush: 11,
+      drive: 0.08,
+      delay: 0.12,
+      reverb: 0.12,
+      tone: 6200
     },
     tracks: TRACK_DEFS.map((def) => ({
       id: def.id,
@@ -952,16 +953,16 @@ function triggerTrack(def, track, cell, time, velocity) {
 
   if (def.instrument === "kick") {
     instrument.drum.triggerAttackRelease(cell.accent ? "C1" : "A0", "8n", time, v);
-    instrument.click.triggerAttackRelease("64n", time, v * 0.5);
+    instrument.click.triggerAttackRelease("64n", time, v * 0.22);
     return;
   }
   if (def.instrument === "snare") {
-    instrument.noise.triggerAttackRelease("16n", time, v * 0.95);
-    instrument.body.triggerAttackRelease(cell.accent ? "A2" : "G2", "16n", time, v * 0.6);
+    instrument.noise.triggerAttackRelease("16n", time, v * 0.85);
+    instrument.body.triggerAttackRelease(cell.accent ? "A2" : "G2", "16n", time, v * 0.55);
     return;
   }
   if (def.instrument === "hat") {
-    instrument.triggerAttackRelease(cell.accent ? "16n" : "32n", time, v * 0.55);
+    instrument.triggerAttackRelease(cell.accent ? "16n" : "32n", time, v * 0.4);
     return;
   }
   if (def.instrument === "clap") {
@@ -977,60 +978,63 @@ function triggerTrack(def, track, cell, time, velocity) {
 
   const note = noteFromDegree(def, cell.degree);
   if (def.instrument === "bass") {
-    instrument.triggerAttackRelease(note, cell.accent ? "8n" : "16n", time, v * 0.85);
+    instrument.triggerAttackRelease(note, cell.accent ? "8n" : "16n", time, v * 0.82);
   } else if (def.instrument === "lead") {
-    instrument.triggerAttackRelease(note, cell.accent ? "8n" : "16n", time, v * 0.62);
+    instrument.triggerAttackRelease(note, cell.accent ? "8n" : "16n", time, v * 0.5);
   } else if (def.instrument === "arp") {
-    instrument.triggerAttackRelease(noteFromDegree(def, cell.degree + (cell.accent ? 7 : 0)), "32n", time, v * 0.56);
+    instrument.triggerAttackRelease(noteFromDegree(def, cell.degree + (cell.accent ? 7 : 0)), "32n", time, v * 0.46);
   } else if (def.instrument === "chord") {
     const chord = [0, 2, 4].map((offset) => noteFromDegree(def, cell.degree + offset));
-    instrument.triggerAttackRelease(chord, "8n", time, v * 0.36);
+    instrument.triggerAttackRelease(chord, "8n", time, v * 0.3);
   } else if (def.instrument === "zap") {
     instrument.frequency.setValueAtTime(noteToFrequency(note), time);
-    instrument.frequency.exponentialRampToValueAtTime(noteToFrequency(note) * 0.35, time + 0.09);
-    instrument.triggerAttackRelease(note, "32n", time, v * 0.48);
+    instrument.frequency.exponentialRampToValueAtTime(noteToFrequency(note) * 0.5, time + 0.16);
+    instrument.triggerAttackRelease(note, "32n", time, v * 0.4);
   }
 }
 
 async function ensureAudio() {
   if (audio) return audio;
 
-  const master = new Tone.Gain(0.9);
+  const master = new Tone.Gain(0.88);
   const filter = new Tone.Filter({ type: "lowpass", frequency: state.effects.tone, rolloff: -12 });
   const crusher = new Tone.BitCrusher(state.effects.crush);
-  crusher.wet.value = 0.22;
+  crusher.wet.value = 0.08;
   const drive = new Tone.Distortion(state.effects.drive);
-  drive.wet.value = 0.18;
-  const delay = new Tone.FeedbackDelay("8n", 0.28);
+  drive.wet.value = 0.06;
+  const delay = new Tone.FeedbackDelay("8n", 0.24);
   delay.wet.value = state.effects.delay;
-  const reverb = new Tone.Reverb(2.2);
+  const reverb = new Tone.Reverb(1.4);
   reverb.wet.value = state.effects.reverb;
-  // Glue stage: shelf EQ adds weight down low and air up top, then a
-  // slow-attack compressor lets the transient spike through before it
-  // clamps the body — that gap is what reads as "punch".
-  const eq = new Tone.EQ3({ low: 3.5, mid: 0, high: 1.5 });
-  const comp = new Tone.Compressor({ threshold: -14, ratio: 3, attack: 0.016, release: 0.16, knee: 10 });
+  // Glue stage: warm low end, tamed highs, and a slow compressor that lets
+  // transients through before clamping the body for a soft, rounded punch.
+  const eq = new Tone.EQ3({ low: 2.5, mid: -1, high: -2 });
+  const comp = new Tone.Compressor({ threshold: -16, ratio: 2.4, attack: 0.02, release: 0.22, knee: 12 });
   const limiter = new Tone.Limiter(-0.6);
   const analyser = new Tone.Analyser("waveform", 256);
 
   master.chain(filter, crusher, drive, delay, reverb, eq, comp, limiter, Tone.Destination);
   limiter.connect(analyser);
 
+  // Dry SFX bus — FX tracks flagged `dry` (zap, etc.) and sample pads bypass
+  // the crush/drive/delay/reverb chain so callouts and zaps stay clean.
+  const boardComp = new Tone.Compressor({ threshold: -22, ratio: 4, attack: 0.004, release: 0.14 });
+  const sfxBus = new Tone.Volume(0);
+  sfxBus.chain(boardComp, limiter);
+  const boardBus = new Tone.Volume(-12);
+  boardBus.connect(boardComp);
+
   const buses = {};
   const instruments = {};
   TRACK_DEFS.forEach((def) => {
-    const bus = new Tone.Volume(trackDefaultDb(def)).connect(master);
+    const target = def.dry ? sfxBus : master;
+    const bus = new Tone.Volume(trackDefaultDb(def)).connect(target);
     buses[def.id] = bus;
     instruments[def.id] = createInstrument(def, bus);
   });
-  // Sample pads bypass the sequencer's crush/delay chain so callouts stay
-  // crisp — they get their own fast compressor straight into the limiter.
-  const boardComp = new Tone.Compressor({ threshold: -15, ratio: 4, attack: 0.003, release: 0.1 });
-  const boardBus = new Tone.Volume(1);
-  boardBus.chain(boardComp, limiter);
   const soundboard = { bus: boardBus, comp: boardComp };
 
-  audio = { master, filter, crusher, drive, delay, reverb, eq, comp, limiter, analyser, buses, instruments, soundboard };
+  audio = { master, filter, crusher, drive, delay, reverb, eq, comp, limiter, analyser, buses, instruments, soundboard, sfxBus };
   connectAllPads();
   await reverb.generate();
   applyEffects();
@@ -1043,14 +1047,14 @@ function createInstrument(def, destination) {
   if (def.instrument === "kick") {
     return {
       drum: new Tone.MembraneSynth({
-        pitchDecay: 0.048,
-        octaves: 10,
+        pitchDecay: 0.07,
+        octaves: 6,
         oscillator: { type: "sine" },
-        envelope: { attack: 0.001, decay: 0.52, sustain: 0.01, release: 0.4 }
+        envelope: { attack: 0.002, decay: 0.62, sustain: 0.01, release: 0.5 }
       }).connect(destination),
       click: new Tone.NoiseSynth({
-        noise: { type: "white" },
-        envelope: { attack: 0.001, decay: 0.018, sustain: 0, release: 0.01 }
+        noise: { type: "pink" },
+        envelope: { attack: 0.001, decay: 0.012, sustain: 0, release: 0.008 }
       }).connect(destination)
     };
   }
@@ -1058,8 +1062,8 @@ function createInstrument(def, destination) {
   if (def.instrument === "snare") {
     return {
       noise: new Tone.NoiseSynth({
-        noise: { type: "white" },
-        envelope: { attack: 0.001, decay: 0.17, sustain: 0, release: 0.08 }
+        noise: { type: "pink" },
+        envelope: { attack: 0.001, decay: 0.13, sustain: 0, release: 0.06 }
       }).connect(destination),
       body: new Tone.MembraneSynth({
         pitchDecay: 0.02,
@@ -1072,12 +1076,12 @@ function createInstrument(def, destination) {
 
   if (def.instrument === "hat") {
     return new Tone.MetalSynth({
-      frequency: 360,
-      envelope: { attack: 0.001, decay: 0.07, release: 0.03 },
-      harmonicity: 5.1,
-      modulationIndex: 32,
-      resonance: 6200,
-      octaves: 1.6
+      frequency: 240,
+      envelope: { attack: 0.002, decay: 0.045, release: 0.04 },
+      harmonicity: 4.2,
+      modulationIndex: 16,
+      resonance: 3800,
+      octaves: 1.1
     }).connect(destination);
   }
 
@@ -1089,52 +1093,50 @@ function createInstrument(def, destination) {
   }
 
   if (def.instrument === "bass") {
-    // MonoSynth with a snappy filter envelope — the squelch on each note
-    // attack carries way more weight than the old soft FM sine.
     return new Tone.MonoSynth({
-      oscillator: { type: "fatsawtooth", count: 2, spread: 14 },
-      envelope: { attack: 0.002, decay: 0.16, sustain: 0.45, release: 0.12 },
-      filter: { type: "lowpass", rolloff: -24, Q: 2 },
-      filterEnvelope: { attack: 0.001, decay: 0.16, sustain: 0.18, release: 0.1, baseFrequency: 85, octaves: 3.4 }
+      oscillator: { type: "fattriangle", count: 2, spread: 10 },
+      envelope: { attack: 0.012, decay: 0.26, sustain: 0.55, release: 0.22 },
+      filter: { type: "lowpass", rolloff: -24, Q: 1 },
+      filterEnvelope: { attack: 0.012, decay: 0.24, sustain: 0.35, release: 0.18, baseFrequency: 70, octaves: 2.6 }
     }).connect(destination);
   }
 
   if (def.instrument === "lead") {
     return new Tone.DuoSynth({
-      vibratoAmount: 0.12,
-      vibratoRate: 5.4,
-      harmonicity: 1.51,
+      vibratoAmount: 0.04,
+      vibratoRate: 4.4,
+      harmonicity: 1.2,
       voice0: {
-        oscillator: { type: "sawtooth" },
-        envelope: { attack: 0.005, decay: 0.1, sustain: 0.18, release: 0.09 }
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.02, decay: 0.22, sustain: 0.3, release: 0.32 }
       },
       voice1: {
-        oscillator: { type: "square" },
-        envelope: { attack: 0.006, decay: 0.12, sustain: 0.12, release: 0.08 }
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.025, decay: 0.24, sustain: 0.25, release: 0.3 }
       }
     }).connect(destination);
   }
 
   if (def.instrument === "arp") {
     return new Tone.AMSynth({
-      harmonicity: 2.7,
-      oscillator: { type: "pulse", width: 0.24 },
-      envelope: { attack: 0.002, decay: 0.08, sustain: 0.05, release: 0.05 },
-      modulation: { type: "square" },
-      modulationEnvelope: { attack: 0.001, decay: 0.05, sustain: 0.02, release: 0.04 }
+      harmonicity: 2.1,
+      oscillator: { type: "sine" },
+      envelope: { attack: 0.01, decay: 0.16, sustain: 0.22, release: 0.2 },
+      modulation: { type: "sine" },
+      modulationEnvelope: { attack: 0.012, decay: 0.12, sustain: 0.12, release: 0.14 }
     }).connect(destination);
   }
 
   if (def.instrument === "chord") {
     return new Tone.PolySynth(Tone.Synth, {
-      oscillator: { type: "fatsawtooth", count: 3, spread: 24 },
-      envelope: { attack: 0.018, decay: 0.22, sustain: 0.24, release: 0.32 }
+      oscillator: { type: "fattriangle", count: 2, spread: 16 },
+      envelope: { attack: 0.05, decay: 0.34, sustain: 0.45, release: 0.7 }
     }).connect(destination);
   }
 
   return new Tone.Synth({
-    oscillator: { type: "fmsquare", modulationType: "sawtooth", modulationIndex: 2 },
-    envelope: { attack: 0.001, decay: 0.055, sustain: 0.01, release: 0.05 }
+    oscillator: { type: "fmsine", modulationType: "sine", modulationIndex: 1.2 },
+    envelope: { attack: 0.002, decay: 0.14, sustain: 0.02, release: 0.16 }
   }).connect(destination);
 }
 
@@ -1231,26 +1233,28 @@ function loadPreset(id, silent = false) {
   if (!silent) toast(`${preset.name} loaded`);
 }
 
-// The "original" — a warm, mid-tempo groove that sounds finished the moment
-// it loads. This is what greets people instead of a frantic 148bpm pattern.
+// The "original" — a slow, spacious groove that sounds finished the moment
+// it loads. This is what greets people: warm pads, soft drums, gentle swing,
+// no busy arp or harsh FX — just a chill place to land.
 async function loadSignature({ play = false } = {}) {
   clearCells();
-  state.bpm = 92;
-  state.swing = 16;
-  state.humanize = 6;
+  state.bpm = 84;
+  state.swing = 18;
+  state.humanize = 8;
   state.root = "A";
   state.scale = "dorian";
   state.steps = 16;
-  state.effects = { crush: 12, drive: 0.12, delay: 0.22, reverb: 0.34, tone: 6800 };
+  state.effects = { crush: 12, drive: 0.06, delay: 0.14, reverb: 0.16, tone: 5200 };
 
-  setTrack("kick", [[0, 0, true], 6, [8, 0, true], 14]);
+  setTrack("kick", [[0, 0, true], [8, 0, true], [14, 0]]);
   setTrack("snare", [4, 12]);
-  setTrack("hat", [2, 6, 10, 14, [7, 0], [15, 0]]);
+  setTrack("hat", [2, 6, 10, 14]);
   setTrack("clap", [12]);
-  setTrack("bass", [[0, 0, true], [3, 4], [6, 2], [8, 0], [11, 4], [14, 5]]);
+  setTrack("bass", [[0, 0, true], [8, 3], [11, 2]]);
   setTrack("chord", [[0, 0], [8, 3]]);
-  setTrack("lead", [[4, 4], [7, 6], [12, 7], [15, 5, true]]);
-  setTrack("arp", [[2, 0], [6, 4], [10, 2], [13, 6]]);
+  setTrack("lead", [[4, 4], [12, 5, true]]);
+  setTrack("arp", [[2, 0], [6, 2], [10, 4], [13, 2]]);
+  setTrack("zap", [[15, 7, true]]);
 
   applyTransportSettings();
   applyEffects();
@@ -1268,13 +1272,15 @@ async function loadSignature({ play = false } = {}) {
 function startFresh() {
   if (state.playing) stopPlayback(false);
   clearCells();
-  state.bpm = 96;
-  state.swing = 8;
+  state.bpm = 88;
+  state.swing = 12;
   state.root = "A";
   state.scale = "minorPent";
   state.steps = 16;
   state.currentStep = -1;
+  state.effects = { crush: 12, drive: 0.06, delay: 0.12, reverb: 0.12, tone: 5800 };
   applyTransportSettings();
+  applyEffects();
   renderApp();
   toast("Fresh start");
 }
@@ -1292,8 +1298,8 @@ function setTrack(trackId, entries) {
 
 function randomizePattern(mode = "balanced") {
   clearCells();
-  const densityBias = mode === "sparse" ? 0.68 : mode === "dense" ? 1.38 : 1;
-  state.bpm = Math.round(randomBetween(104, mode === "dense" ? 194 : 176));
+  const densityBias = mode === "sparse" ? 0.6 : mode === "dense" ? 1.3 : 0.92;
+  state.bpm = Math.round(randomBetween(78, mode === "dense" ? 132 : 108));
   state.root = ROOTS[Math.floor(Math.random() * ROOTS.length)];
   state.scale = randomChoice(Object.keys(SCALES));
 
